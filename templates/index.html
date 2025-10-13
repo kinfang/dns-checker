@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>DNS 一致性检查工具</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        h1 { color: #333; }
+        .container { max-width: 800px; margin: 0 auto; padding: 20px; border: 1px solid #ccc; border-radius: 8px; }
+        label { display: block; margin-top: 10px; font-weight: bold; }
+        input[type="text"], textarea, select { 
+            width: 100%; 
+            padding: 8px; 
+            margin-top: 5px; 
+            border: 1px solid #ddd; 
+            border-radius: 4px; 
+            box-sizing: border-box; 
+        }
+        textarea { height: 150px; resize: vertical; }
+        button { 
+            background-color: #007bff; 
+            color: white; 
+            padding: 10px 15px; 
+            border: none; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            margin-top: 15px; 
+            margin-right: 10px;
+        }
+        button.action-btn { background-color: #28a745; margin-top: 5px; padding: 5px 10px; }
+        button.delete-btn { background-color: #dc3545; margin-top: 5px; padding: 5px 10px; }
+        button:hover { background-color: #0056b3; }
+        button.action-btn:hover { background-color: #1e7e34; }
+        button.delete-btn:hover { background-color: #c82333; }
+        
+        .list-manager { border: 1px dashed #ccc; padding: 10px; margin-bottom: 20px; border-radius: 4px; }
+        .list-controls { display: flex; align-items: flex-end; gap: 10px; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .inconsistent {
+            color: red;
+            font-weight: bold;
+            background-color: #ffeaea;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>DNS 一致性检查工具</h1>
+    
+    <div class="list-manager">
+        <label for="serverListSelector">选择已保存的服务器列表:</label>
+        <div class="list-controls">
+            <select id="serverListSelector" style="width: 50%;" onchange="loadSelectedList()"></select>
+            
+            <input type="text" id="newListName" placeholder="输入列表名称以保存当前列表" style="width: 30%; height: 35px;">
+            <button class="action-btn" type="button" onclick="saveCurrentList()" style="margin-top: 0;">保存当前列表</button>
+            <button class="delete-btn" type="button" onclick="deleteSelectedList()" style="margin-top: 0;">删除选中列表</button>
+        </div>
+    </div>
+
+    <form method="POST">
+        <label for="domain">要查询的域名 (如: www.example.com):</label>
+        <input type="text" id="domain" name="domain" 
+               value="{{ domain if domain else '' }}" required>
+        
+        <label for="dns_servers">DNS 服务器 IP 列表 (每行一个 IP):</label>
+        <textarea id="dns_servers" name="dns_servers" required>{{ dns_servers if dns_servers else '192.168.1.1\n192.168.1.2\n8.8.8.8' }}</textarea>
+        
+        <button type="submit">开始检查</button>
+    </form>
+
+    {% if results %}
+        <h2>检查结果：{{ domain }}</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>DNS 服务器</th>
+                    <th>解析结果 (A 记录)</th>
+                    <th>一致性状态</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in results %}
+                <tr class="{% if item.status == 'inconsistent' %}inconsistent{% endif %}">
+                    <td>{{ item.server }}</td>
+                    <td>{{ item.result }}</td>
+                    <td>
+                        {% if item.status == 'inconsistent' %}
+                            <span class="inconsistent">❌ 不一致</span>
+                        {% else %}
+                            ✅ 一致
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+</div>
+
+<script>
+    const STORAGE_KEY = 'dnsServerLists';
+    const serverListSelector = document.getElementById('serverListSelector');
+    const dnsServersTextarea = document.getElementById('dns_servers');
+    const newListNameInput = document.getElementById('newListName');
+    
+    // --- 核心 LocalStorage 逻辑 ---
+    
+    /**
+     * 从 LocalStorage 中获取所有保存的列表
+     * @returns {object} 包含所有列表的对象
+     */
+    function getSavedLists() {
+        const lists = localStorage.getItem(STORAGE_KEY);
+        try {
+            return lists ? JSON.parse(lists) : {};
+        } catch (e) {
+            console.error("无法解析保存的列表数据", e);
+            return {};
+        }
+    }
+    
+    /**
+     * 将列表数据保存到 LocalStorage
+     * @param {object} lists - 要保存的列表对象
+     */
+    function saveListsToStorage(lists) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(lists));
+    }
+
+    /**
+     * 填充下拉菜单
+     * @param {object} lists - 包含所有列表的对象
+     * @param {string} selectedName - 页面加载时要选中的列表名称
+     */
+    function populateSelector(lists, selectedName = null) {
+        // 清空现有选项
+        serverListSelector.innerHTML = '<option value="">-- 选择列表 --</option>';
+        
+        let foundSelected = false;
+        
+        for (const name in lists) {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            
+            if (name === selectedName) {
+                option.selected = true;
+                foundSelected = true;
+            }
+            
+            serverListSelector.appendChild(option);
+        }
+        
+        // 如果没有预选中的项，并且有列表，则默认选中第一个
+        if (!foundSelected && Object.keys(lists).length > 0) {
+            serverListSelector.querySelector('option:nth-child(2)').selected = true;
+            loadSelectedList();
+        }
+    }
+
+    /**
+     * 页面加载时执行：读取所有列表并填充下拉菜单
+     */
+    function initializeListManager() {
+        const lists = getSavedLists();
+        populateSelector(lists);
+    }
+    
+    // --- UI 交互逻辑 ---
+    
+    /**
+     * 加载下拉菜单中选中的服务器列表到文本域
+     */
+    window.loadSelectedList = function() {
+        const selectedName = serverListSelector.value;
+        if (!selectedName) {
+            // 如果选中了 "-- 选择列表 --" 或列表为空，则不操作
+            return;
+        }
+        
+        const lists = getSavedLists();
+        const listContent = lists[selectedName];
+        
+        if (listContent) {
+            dnsServersTextarea.value = listContent;
+            console.log(`已加载列表: ${selectedName}`);
+        }
+    };
+    
+    /**
+     * 将当前文本域中的内容保存为一个新列表
+     */
+    window.saveCurrentList = function() {
+        const listName = newListNameInput.value.trim();
+        const listContent = dnsServersTextarea.value.trim();
+        
+        if (!listName) {
+            alert("请输入列表名称！");
+            newListNameInput.focus();
+            return;
+        }
+        if (!listContent) {
+            alert("DNS 服务器列表不能为空！");
+            return;
+        }
+        
+        const lists = getSavedLists();
+        lists[listName] = listContent;
+        
+        saveListsToStorage(lists);
+        populateSelector(lists, listName); // 重新填充并选中新保存的列表
+        newListNameInput.value = ''; // 清空名称输入框
+        alert(`列表 "${listName}" 已保存！`);
+    };
+
+    /**
+     * 删除下拉菜单中选中的列表
+     */
+    window.deleteSelectedList = function() {
+        const selectedName = serverListSelector.value;
+        if (!selectedName) {
+            alert("请先选择一个要删除的列表！");
+            return;
+        }
+        
+        if (confirm(`确定要删除列表 "${selectedName}" 吗？`)) {
+            const lists = getSavedLists();
+            delete lists[selectedName];
+            saveListsToStorage(lists);
+            
+            // 清空文本域并重新填充下拉菜单
+            dnsServersTextarea.value = ''; 
+            initializeListManager();
+            alert(`列表 "${selectedName}" 已删除！`);
+        }
+    };
+    
+    // 页面完全加载后初始化
+    document.addEventListener('DOMContentLoaded', initializeListManager);
+
+</script>
+
+</body>
+</html>
