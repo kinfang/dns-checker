@@ -43,14 +43,18 @@
 Bash
 
 ```
-docker run -d -p 8095:8095 --name dns-checker-app gujian803/dns-checker:latest
+docker run -d \
+    --restart=always \
+    -p 8095:8095 \
+    --name dns-checker-app \
+    gujian803/dns-checker:latest
 ```
 
 #### 2. 访问应用
 
-如果您的服务器 IP 是 `192.168.5.51`，则通过浏览器访问：
+如果您的服务器 IP 是 `192.168.1.10`，则通过浏览器访问：
 
 ```
-http://192.168.5.51:8095
+http://192.168.1.10:8095
 ```
 
