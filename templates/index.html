@@ -35,6 +35,7 @@
         
         .list-manager { border: 1px dashed #ccc; padding: 10px; margin-bottom: 20px; border-radius: 4px; }
         .list-controls { display: flex; align-items: flex-end; gap: 10px; }
+        .tip { font-size: 0.85em; color: #6c757d; margin-top: 5px; } /* 新增的提示样式 */
         
         table { width: 100%; border-collapse: collapse; margin-top: 20px; }
         th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
@@ -53,6 +54,11 @@
     
     <div class="list-manager">
         <label for="serverListSelector">选择已保存的服务器列表:</label>
+        
+        <p class="tip">
+            ❗ **注意：** 所有服务器列表和配置信息均保存在**当前浏览器的本地存储 (LocalStorage)**，只对当前用户和浏览器生效。清除浏览器缓存将导致列表丢失。
+        </p>
+        
         <div class="list-controls">
             <select id="serverListSelector" style="width: 50%;" onchange="loadSelectedList()"></select>
             
@@ -62,7 +68,7 @@
         </div>
     </div>
 
-    <form method="POST">
+    <form method="POST" id="mainForm">
         <label for="domain">要查询的域名 (如: www.example.com):</label>
         <input type="text" id="domain" name="domain" 
                value="{{ domain if domain else '' }}" required>
@@ -104,16 +110,14 @@
 
 <script>
     const STORAGE_KEY = 'dnsServerLists';
+    const SELECTED_KEY = 'selectedListName'; // 新增：保存选中的列表名称
     const serverListSelector = document.getElementById('serverListSelector');
     const dnsServersTextarea = document.getElementById('dns_servers');
     const newListNameInput = document.getElementById('newListName');
+    const mainForm = document.getElementById('mainForm');
     
     // --- 核心 LocalStorage 逻辑 ---
     
-    /**
-     * 从 LocalStorage 中获取所有保存的列表
-     * @returns {object} 包含所有列表的对象
-     */
     function getSavedLists() {
         const lists = localStorage.getItem(STORAGE_KEY);
         try {
@@ -124,60 +128,49 @@
         }
     }
     
-    /**
-     * 将列表数据保存到 LocalStorage
-     * @param {object} lists - 要保存的列表对象
-     */
     function saveListsToStorage(lists) {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(lists));
     }
-
+    
     /**
-     * 填充下拉菜单
+     * 填充下拉菜单并尝试选中上次使用的列表
      * @param {object} lists - 包含所有列表的对象
-     * @param {string} selectedName - 页面加载时要选中的列表名称
      */
-    function populateSelector(lists, selectedName = null) {
+    function populateSelector(lists) {
+        // 尝试从 LocalStorage 获取上次选中的名称
+        const selectedNameOnLoad = localStorage.getItem(SELECTED_KEY);
+        
         // 清空现有选项
         serverListSelector.innerHTML = '<option value="">-- 选择列表 --</option>';
         
-        let foundSelected = false;
+        let shouldLoadList = false;
         
         for (const name in lists) {
             const option = document.createElement('option');
             option.value = name;
             option.textContent = name;
             
-            if (name === selectedName) {
+            // 检查是否是上次选中的列表
+            if (name === selectedNameOnLoad) {
                 option.selected = true;
-                foundSelected = true;
+                shouldLoadList = true;
             }
             
             serverListSelector.appendChild(option);
         }
         
-        // 如果没有预选中的项，并且有列表，则默认选中第一个
-        if (!foundSelected && Object.keys(lists).length > 0) {
-            serverListSelector.querySelector('option:nth-child(2)').selected = true;
-            loadSelectedList();
+        // 页面加载时，如果找到了上次选中的列表，自动加载内容到文本域
+        if (shouldLoadList) {
+            loadSelectedList(selectedNameOnLoad);
         }
     }
-
-    /**
-     * 页面加载时执行：读取所有列表并填充下拉菜单
-     */
-    function initializeListManager() {
-        const lists = getSavedLists();
-        populateSelector(lists);
-    }
-    
-    // --- UI 交互逻辑 ---
     
     /**
      * 加载下拉菜单中选中的服务器列表到文本域
+     * @param {string} listName - 可选，用于从外部指定加载哪个列表
      */
-    window.loadSelectedList = function() {
-        const selectedName = serverListSelector.value;
+    window.loadSelectedList = function(listName = null) {
+        const selectedName = listName || serverListSelector.value;
         if (!selectedName) {
             // 如果选中了 "-- 选择列表 --" 或列表为空，则不操作
             return;
@@ -188,7 +181,9 @@
         
         if (listContent) {
             dnsServersTextarea.value = listContent;
-            console.log(`已加载列表: ${selectedName}`);
+            // 无论如何，只要加载了列表，就保存它的名字，解决问题 1
+            localStorage.setItem(SELECTED_KEY, selectedName); 
+            console.log(`已加载并记录列表: ${selectedName}`);
         }
     };
     
@@ -213,7 +208,10 @@
         lists[listName] = listContent;
         
         saveListsToStorage(lists);
-        populateSelector(lists, listName); // 重新填充并选中新保存的列表
+        // 自动选中并记录新保存的列表
+        localStorage.setItem(SELECTED_KEY, listName);
+        populateSelector(lists); 
+        
         newListNameInput.value = ''; // 清空名称输入框
         alert(`列表 "${listName}" 已保存！`);
     };
@@ -233,13 +231,37 @@
             delete lists[selectedName];
             saveListsToStorage(lists);
             
+            // 如果删除了当前选中的列表，则清空记录
+            if (localStorage.getItem(SELECTED_KEY) === selectedName) {
+                localStorage.removeItem(SELECTED_KEY);
+            }
+            
             // 清空文本域并重新填充下拉菜单
             dnsServersTextarea.value = ''; 
-            initializeListManager();
+            populateSelector(lists);
             alert(`列表 "${selectedName}" 已删除！`);
         }
     };
     
+    /**
+     * 页面加载时执行：读取所有列表并填充下拉菜单，并尝试恢复上次选择
+     */
+    function initializeListManager() {
+        const lists = getSavedLists();
+        populateSelector(lists);
+    }
+
+    // --- 提交前记录选中项的逻辑 (确保提交后也能恢复) ---
+    mainForm.addEventListener('submit', function() {
+        const selectedName = serverListSelector.value;
+        if (selectedName) {
+            localStorage.setItem(SELECTED_KEY, selectedName);
+        } else {
+            // 如果用户选择了 "-- 选择列表 --"，则清除记录
+            localStorage.removeItem(SELECTED_KEY);
+        }
+    });
+
     // 页面完全加载后初始化
     document.addEventListener('DOMContentLoaded', initializeListManager);
 
